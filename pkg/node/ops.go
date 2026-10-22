@@ -112,7 +112,10 @@ func (o *Ops) Drain(ctx context.Context, name string, opts DrainOptions) error {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
-	if ctx.Err() != nil || strings.Contains(err.Error(), "global timeout reached") {
+	// client-go's rate limiter fails early with "would exceed context
+	// deadline" (not wrapping DeadlineExceeded) before ctx is done.
+	if ctx.Err() != nil || strings.Contains(err.Error(), "global timeout reached") ||
+		strings.Contains(err.Error(), "would exceed context deadline") {
 		return fmt.Errorf("draining node %s: %w (%v)", name, context.DeadlineExceeded, err)
 	}
 	return fmt.Errorf("draining node %s: %w", name, err)

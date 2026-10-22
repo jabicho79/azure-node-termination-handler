@@ -142,6 +142,24 @@ func TestDrainTimesOut(t *testing.T) {
 	}
 }
 
+// The client rate limiter fails a request early, before the context is done,
+// when waiting would pass the drain deadline. That is a drain timeout too.
+func TestDrainRateLimiterDeadlineIsTimeout(t *testing.T) {
+	c, o := drainClient()
+	c.PrependReactor("create", "pods", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		if a.GetSubresource() != "eviction" {
+			return false, nil, nil
+		}
+		return true, nil, errors.New("client rate limiter Wait returned an error: rate: Wait(n=1) would exceed context deadline")
+	})
+	err := o.Drain(context.Background(), "n1", DrainOptions{
+		Deadline: time.Now().Add(10 * time.Second), IgnoreDaemonSets: true, DeleteEmptyDirData: true,
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want DeadlineExceeded", err)
+	}
+}
+
 func TestDryRunDoesNotMutate(t *testing.T) {
 	c := fake.NewSimpleClientset(newNode("n1"))
 	o := NewOps(c, true)
