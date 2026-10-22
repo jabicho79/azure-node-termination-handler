@@ -18,7 +18,7 @@
 - `NotBefore` is RFC1123 (`http.TimeFormat`, e.g. `Mon, 19 Sep 2016 18:29:47 GMT`) and is empty for `Started` events.
 - No Azure SDK, credentials or managed identity anywhere.
 - Every annotation, label, metric prefix and Kubernetes Event source uses `azure-node-termination-handler` (annotations: `azure-node-termination-handler/<key>`; metrics: `anth_<name>`).
-- Defaults: poll 5s, drain safety margin 60s, max drain time 15m, Preempt safety margin 5s, Preempt pod grace 20s, event-gone grace 5m, auto-approve on, all of Reboot/Redeploy/Preempt/Terminate enabled.
+- Defaults: poll 5s, drain safety margin 60s, max drain time 60m, Preempt safety margin 5s, Preempt pod grace 20s, event-gone grace 5m, auto-approve on, all of Reboot/Redeploy/Preempt/Terminate enabled.
 - Freeze never cordons, drains or approves.
 - Never let an event's deadline pass without approving it (when auto-approve is on and the event is still `Scheduled`).
 - Only uncordon a node the agent cordoned itself, and never one whose CAPI Machine is being deleted.
@@ -56,7 +56,7 @@
       EnableTerminate       bool          // ENABLE_TERMINATE, true
       AutoApprove           bool          // AUTO_APPROVE, true
       DrainSafetyMargin     time.Duration // DRAIN_SAFETY_MARGIN, 60s
-      MaxDrainTime          time.Duration // MAX_DRAIN_TIME, 15m
+      MaxDrainTime          time.Duration // MAX_DRAIN_TIME, 60m
       PreemptSafetyMargin   time.Duration // PREEMPT_SAFETY_MARGIN, 5s
       PodGracePeriod        int           // POD_GRACE_PERIOD seconds, -1 (= pod's own)
       PreemptPodGracePeriod int           // PREEMPT_POD_GRACE_PERIOD, 20
@@ -77,7 +77,7 @@
 
 - [ ] **Step 1: `go mod init github.com/jabicho79/azure-node-termination-handler`**, add LICENSE/NOTICE/.gitignore/README. Makefile targets: `build` (`go build ./...`), `test` (`go test ./...`), `vet`, `docker-build`, `helm-lint`, `e2e` (bodies filled in by later tasks; leave `docker-build`/`helm-lint`/`e2e` as `@echo TODO` only until their task).
 - [ ] **Step 2: Write failing tests** in `pkg/config/config_test.go`:
-  - `TestParseDefaults`: `Parse(nil, env{"NODE_NAME":"n1"})` → `PollInterval==5*time.Second`, `DrainSafetyMargin==60*time.Second`, `MaxDrainTime==15*time.Minute`, `PreemptSafetyMargin==5*time.Second`, `PreemptPodGracePeriod==20`, `PodGracePeriod==-1`, `EventGoneGrace==5*time.Minute`, `AutoApprove`, all four `Enable*` true, `IMDSEndpoint=="http://169.254.169.254"`, `MetricsPort==9092`, `ProbesPort==8080`, `UptimeFile=="/proc/uptime"`.
+  - `TestParseDefaults`: `Parse(nil, env{"NODE_NAME":"n1"})` → `PollInterval==5*time.Second`, `DrainSafetyMargin==60*time.Second`, `MaxDrainTime==60*time.Minute`, `PreemptSafetyMargin==5*time.Second`, `PreemptPodGracePeriod==20`, `PodGracePeriod==-1`, `EventGoneGrace==5*time.Minute`, `AutoApprove`, all four `Enable*` true, `IMDSEndpoint=="http://169.254.169.254"`, `MetricsPort==9092`, `ProbesPort==8080`, `UptimeFile=="/proc/uptime"`.
   - `TestParseEnvOverride`: env `POLL_INTERVAL=2s`, `AUTO_APPROVE=false` → those values.
   - `TestParseFlagBeatsEnv`: env `POLL_INTERVAL=2s`, args `--poll-interval=3s` → `3s`.
   - `TestParseRequiresNodeName`: empty env → error mentioning `node-name`.
@@ -177,8 +177,8 @@ Rules (from the spec's event table):
 
 `DrainDeadline = min(NotBefore − margin, firstSeen + MaxDrainTime)`. If `NotBefore` is missing or invalid, `DrainDeadline = firstSeen`. `EventStatus == Started` forces `Approve = false`.
 
-- [ ] **Step 1: Write table-driven failing test `TestDecide`.** Use `firstSeen = 2026-10-22T10:00:00Z`, defaults from Global Constraints and `MaxDrainTime=15m`. Cases:
-  - Redeploy, NotBefore firstSeen+7 days → `Cordon, Drain, Approve, MarkUncordonAfterReboot` true, `DrainDeadline == firstSeen+15m`, `PodGracePeriod == -1`.
+- [ ] **Step 1: Write table-driven failing test `TestDecide`.** Use `firstSeen = 2026-10-22T10:00:00Z`, defaults from Global Constraints and `MaxDrainTime=60m`. Cases:
+  - Redeploy, NotBefore firstSeen+7 days → `Cordon, Drain, Approve, MarkUncordonAfterReboot` true, `DrainDeadline == firstSeen+60m`, `PodGracePeriod == -1`.
   - Reboot, NotBefore firstSeen+10m → `DrainDeadline == firstSeen+9m`.
   - Preempt, NotBefore firstSeen+30s → `DrainDeadline == firstSeen+25s`, `PodGracePeriod == 20`, `MarkUncordonAfterReboot` true.
   - Terminate, NotBefore +10m → `MarkUncordonAfterReboot` false, Approve true.
@@ -388,7 +388,7 @@ Rules (from the spec's event table):
 `fakes_test.go` holds in-memory fakes: `fakeIMDS` (scripted documents, records approvals, can return an error) and `fakeNodes` (map of nodes, records calls, drain can return nil, `DeadlineExceeded` or block). It also holds a `fakeMachines` and a recording notifier. Use a controllable clock.
 
 - [ ] **Step 1: Write failing tests:**
-  - `TestRedeployCordonDrainApprove`: Redeploy for `vm-a` with NotBefore +7d → the node is unschedulable, the drain was called with `Deadline == now+15m`, approvals `["E1"]`, `AnnAction == "uncordon-after-reboot"`, and notifications are Detected, Cordoned, Drained, Approved in that order.
+  - `TestRedeployCordonDrainApprove`: Redeploy for `vm-a` with NotBefore +7d → the node is unschedulable, the drain was called with `Deadline == now+60m`, approvals `["E1"]`, `AnnAction == "uncordon-after-reboot"`, and notifications are Detected, Cordoned, Drained, Approved in that order.
   - `TestIgnoresEventsForOtherVMs` (Review Focus 3): event Resources `["vm-b"]`, own `vm-a` → no calls to Cordon/Drain/Approve.
   - `TestFreezeNoAction`: Freeze for `vm-a` → no cordon/drain/approve. Exactly one `StageFreeze` across two ticks.
   - `TestDrainTimeoutApprovesAtDeadline`: drain returns `DeadlineExceeded`. Advance the clock past the deadline → approved, and `DrainTimeout` was notified.

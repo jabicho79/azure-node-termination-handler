@@ -73,7 +73,7 @@ Events whose `EventStatus` is already `Started` get best-effort handling: cordon
 ### Drain
 
 - Uses `k8s.io/kubectl/pkg/drain`, like NTH: respects PodDisruptionBudgets and pod termination grace periods, ignores DaemonSet pods, and has configurable handling for emptyDir and unmanaged pods.
-- **Drain deadline** is the earlier of `NotBefore − safety margin` (default 60 s) and a configurable maximum drain time. When it's reached and pods are still left (for example, blocked by a PDB), the agent logs a warning, emits a Kubernetes Event and a metric, and **approves anyway**. *(My call: never let the deadline pass without approving.)*
+- **Drain deadline** is the earlier of `NotBefore − safety margin` (default 60 s) and a configurable maximum drain time (default **60 minutes**, the user's choice). When it's reached and pods are still left (for example, blocked by a PDB), the agent logs a warning, emits a Kubernetes Event and a metric, and **approves anyway**. *(My call: never let the deadline pass without approving.)*
 - For Preempt, the grace period is capped so the drain can finish inside the notice.
 
 ### Multi-VM events *(my call)*
