@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -73,6 +74,8 @@ type Handler struct {
 	approvedBySweep map[string]bool
 	lastIncarnation int
 	seenDocument    bool
+	// ready is set once Startup has succeeded; read by the health check.
+	ready atomic.Bool
 }
 
 // New returns a Handler.
@@ -109,16 +112,26 @@ func (h *Handler) Tick(ctx context.Context) error {
 	e, ok := h.pickEvent(events, current)
 	takeover := ok && e.EventType == imds.EventPreempt
 	if current != "" && !containsEvent(events, current) && !takeover {
-		return h.handleGone(ctx, n)
+		err := h.handleGone(ctx, n)
+		if ctx.Err() != nil {
+			return err
+		}
+		return errors.Join(err, h.sweep(ctx, n, events, current))
+	}
+	var errs []error
+	if _, gone := n.Annotations[node.AnnEventGoneSince]; gone && current != "" && containsEvent(events, current) {
+		log.Info().Str("event", current).Msg("Scheduled event is listed again")
+		// A failure is retried on the next tick; it must not block processing.
+		errs = append(errs, h.unannotate(ctx, n, node.AnnEventGoneSince))
 	}
 	if !ok {
-		return nil
+		return errors.Join(errs...)
 	}
-	err = h.process(ctx, n, e)
+	errs = append(errs, h.process(ctx, n, e))
 	if ctx.Err() != nil {
-		return err
+		return errors.Join(errs...)
 	}
-	return errors.Join(err, h.sweep(ctx, n, events, e.EventID))
+	return errors.Join(append(errs, h.sweep(ctx, n, events, e.EventID))...)
 }
 
 // relevantEvents keeps the events that affect this VM, notifies Freeze events
@@ -415,10 +428,164 @@ func (h *Handler) peersDrained(ctx context.Context, e imds.Event) (bool, error) 
 	return true, nil
 }
 
-// handleGone handles a node whose recorded event is no longer listed.
-// Task 9 implements the release.
+// handleGone handles a node whose recorded event is no longer listed. It
+// records when the event disappeared and releases the node once the event has
+// stayed gone for EventGoneGrace.
 func (h *Handler) handleGone(ctx context.Context, n *corev1.Node) error {
+	now := h.d.Now()
+	logger := log.With().Str("event", n.Annotations[node.AnnEventID]).Logger()
+	raw, ok := n.Annotations[node.AnnEventGoneSince]
+	s, err := strconv.ParseInt(raw, 10, 64)
+	if !ok || err != nil {
+		if ok {
+			logger.Warn().Str("value", raw).Msg("Invalid event-gone-since annotation; resetting it to now")
+		} else {
+			logger.Info().Msg("Scheduled event is no longer listed; waiting before releasing the node")
+		}
+		return h.annotate(ctx, n, map[string]string{node.AnnEventGoneSince: unixString(now)})
+	}
+	if now.Sub(time.Unix(s, 0)) < h.o.EventGoneGrace {
+		return nil
+	}
+	logger.Info().Dur("grace", h.o.EventGoneGrace).Msg("Scheduled event withdrawn; releasing the node")
+	return h.release(ctx, n, false)
+}
+
+// rebooted reports whether the VM booted after the agent approved an event
+// that asked to uncordon after the reboot.
+func (h *Handler) rebooted(n *corev1.Node) (bool, error) {
+	if n.Annotations[node.AnnAction] != node.ActionUncordonAfterReboot {
+		return false, nil
+	}
+	raw := n.Annotations[node.AnnActionTime]
+	s, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		log.Warn().Str("value", raw).Msg("Invalid action-time annotation; not treating the node as rebooted")
+		return false, nil
+	}
+	up, err := h.d.Uptime()
+	if err != nil {
+		return false, fmt.Errorf("reading uptime: %w", err)
+	}
+	return up < h.d.Now().Sub(time.Unix(s, 0)), nil
+}
+
+// release ends the node's current event. It uncordons the node if the agent
+// cordoned it, unless its Cluster API Machine is being deleted, and removes
+// every working annotation. If completed, the event ID is recorded so a
+// Started event still listed after the reboot is not handled again.
+//
+// If the Machine check fails the node is left untouched and the error is
+// returned, so the release is retried.
+func (h *Handler) release(ctx context.Context, n *corev1.Node, completed bool) error {
+	e := imds.Event{EventID: n.Annotations[node.AnnEventID], EventType: imds.EventType(n.Annotations[node.AnnEventType])}
+	logger := log.With().Str("event", e.EventID).Logger()
+
+	deleting, err := h.d.Machines.BeingDeleted(ctx, n)
+	if err != nil {
+		h.d.Metrics.Error("machine")
+		return fmt.Errorf("checking the Machine of node %s: %w", n.Name, err)
+	}
+	switch {
+	case deleting:
+		logger.Info().Msg("Machine is being deleted; leaving the node cordoned")
+		h.notify(ctx, observability.StageUncordonSkipped, e,
+			fmt.Sprintf("Not uncordoning node %s after %s event %s: its Machine is being deleted", n.Name, e.EventType, e.EventID))
+	case n.Annotations[node.AnnCordoned] == "true":
+		if err := h.d.Nodes.Uncordon(ctx, n.Name); err != nil {
+			h.d.Metrics.Action("uncordon", "error")
+			h.d.Metrics.Error("uncordon")
+			return fmt.Errorf("uncordoning node %s: %w", n.Name, err)
+		}
+		h.d.Metrics.Action("uncordon", "ok")
+		n.Spec.Unschedulable = false
+		logger.Info().Msg("Node uncordoned")
+		h.notify(ctx, observability.StageUncordoned, e, "")
+	}
+
+	// Record completion before removing the working annotations: if the
+	// removal fails, the retry still knows the event is done.
+	if completed && e.EventID != "" {
+		if err := h.annotate(ctx, n, map[string]string{node.AnnCompletedEventID: e.EventID}); err != nil {
+			return err
+		}
+	}
+	var present []string
+	for _, k := range node.WorkingAnnotations {
+		if _, ok := n.Annotations[k]; ok {
+			present = append(present, k)
+		}
+	}
+	return h.unannotate(ctx, n, present...)
+}
+
+// Startup releases the node if the VM rebooted for an event the agent
+// approved. It must succeed before the first Tick.
+func (h *Handler) Startup(ctx context.Context) error {
+	n, err := h.d.Nodes.Get(ctx, h.o.NodeName)
+	if err != nil {
+		h.d.Metrics.Error("get_node")
+		return fmt.Errorf("getting node %s: %w", h.o.NodeName, err)
+	}
+	if n.Annotations == nil {
+		n.Annotations = map[string]string{}
+	}
+	rebooted, err := h.rebooted(n)
+	if err != nil {
+		return err
+	}
+	if rebooted {
+		log.Info().Str("event", n.Annotations[node.AnnEventID]).Msg("Node rebooted after approval; releasing it")
+		if err := h.release(ctx, n, true); err != nil {
+			return err
+		}
+	}
+	h.ready.Store(true)
 	return nil
+}
+
+// Ready reports whether Startup has succeeded. It is safe for concurrent use.
+func (h *Handler) Ready() bool { return h.ready.Load() }
+
+// Run calls Startup, retrying every interval until it succeeds, and then
+// Tick every interval. Errors are logged and never stop the loop. Run returns
+// nil once ctx is done.
+func (h *Handler) Run(ctx context.Context, interval time.Duration) error {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	wait := func() bool {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-t.C:
+			return true
+		}
+	}
+
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+		err := h.Startup(ctx)
+		if err == nil {
+			break
+		}
+		if ctx.Err() == nil {
+			log.Error().Err(err).Msg("Startup failed; retrying")
+		}
+		if !wait() {
+			return nil
+		}
+	}
+	log.Info().Msg("Startup complete; polling scheduled events")
+	for {
+		if err := h.Tick(ctx); err != nil && ctx.Err() == nil {
+			log.Error().Err(err).Msg("Tick failed")
+		}
+		if !wait() {
+			return nil
+		}
+	}
 }
 
 // unannotate removes keys from the node and from the local copy n.
