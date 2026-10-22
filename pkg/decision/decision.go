@@ -51,8 +51,8 @@ func Decide(e imds.Event, s Settings, firstSeen time.Time) Plan {
 	deadline := firstSeen
 	if nb, ok := e.NotBeforeTime(); ok {
 		deadline = nb.Add(-margin)
-		if cap := firstSeen.Add(s.MaxDrainTime); cap.Before(deadline) {
-			deadline = cap
+		if limit := firstSeen.Add(s.MaxDrainTime); limit.Before(deadline) {
+			deadline = limit
 		}
 	}
 
