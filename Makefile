@@ -11,4 +11,4 @@ docker-build:
 helm-lint:
 	helm lint charts/azure-node-termination-handler
 e2e:
-	@echo TODO
+	./scripts/e2e.sh
