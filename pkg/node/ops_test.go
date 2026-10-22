@@ -160,6 +160,41 @@ func TestDrainRateLimiterDeadlineIsTimeout(t *testing.T) {
 	}
 }
 
+// A cancelled parent (agent shutdown) is not a drain timeout.
+func TestDrainParentCancelledIsNotTimeout(t *testing.T) {
+	c, o := drainClient()
+	c.PrependReactor("create", "pods", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		if a.GetSubresource() != "eviction" {
+			return false, nil, nil
+		}
+		return true, nil, apierrors.NewTooManyRequests("pdb", 1)
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(200*time.Millisecond, cancel)
+	err := o.Drain(ctx, "n1", DrainOptions{
+		Deadline: time.Now().Add(30 * time.Second), IgnoreDaemonSets: true, DeleteEmptyDirData: true,
+	})
+	if !errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want Canceled and not DeadlineExceeded", err)
+	}
+}
+
+func TestDrainUnrelatedErrorIsNotTimeout(t *testing.T) {
+	c, o := drainClient()
+	c.PrependReactor("create", "pods", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		if a.GetSubresource() != "eviction" {
+			return false, nil, nil
+		}
+		return true, nil, apierrors.NewInternalError(errors.New("boom"))
+	})
+	err := o.Drain(context.Background(), "n1", DrainOptions{
+		Deadline: time.Now().Add(30 * time.Second), IgnoreDaemonSets: true, DeleteEmptyDirData: true,
+	})
+	if err == nil || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want a non-timeout error", err)
+	}
+}
+
 func TestDryRunDoesNotMutate(t *testing.T) {
 	c := fake.NewSimpleClientset(newNode("n1"))
 	o := NewOps(c, true)

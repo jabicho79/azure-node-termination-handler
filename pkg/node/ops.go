@@ -109,12 +109,20 @@ func (o *Ops) Drain(ctx context.Context, name string, opts DrainOptions) error {
 	if err == nil {
 		return nil
 	}
+	// A cancelled parent (shutdown) is not a drain timeout, whatever the
+	// drain helper reports.
+	if errors.Is(ctx.Err(), context.Canceled) {
+		if errors.Is(err, context.Canceled) {
+			return fmt.Errorf("draining node %s: %w", name, err)
+		}
+		return fmt.Errorf("draining node %s: %w (%v)", name, context.Canceled, err)
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
 	// client-go's rate limiter fails early with "would exceed context
 	// deadline" (not wrapping DeadlineExceeded) before ctx is done.
-	if ctx.Err() != nil || strings.Contains(err.Error(), "global timeout reached") ||
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || strings.Contains(err.Error(), "global timeout reached") ||
 		strings.Contains(err.Error(), "would exceed context deadline") {
 		return fmt.Errorf("draining node %s: %w (%v)", name, context.DeadlineExceeded, err)
 	}
