@@ -283,7 +283,12 @@ func TestDrainCancelledByParentIsNotTimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- e.h.Tick(ctx) }()
+	waitUntil := time.Now().Add(5 * time.Second)
 	for len(e.nodes.callsOf("Drain")) == 0 {
+		if time.Now().After(waitUntil) {
+			cancel()
+			t.Fatal("timed out waiting for Drain to be called")
+		}
 		time.Sleep(time.Millisecond)
 	}
 	cancel()
@@ -523,5 +528,162 @@ func TestForeignCordonNotClaimed(t *testing.T) {
 	}
 	if got := e.ann(nodeA, node.AnnCordoned); got != "" {
 		t.Errorf("cordoned = %q, want empty", got)
+	}
+}
+
+func TestCordonErrorStillApprovesAtDeadline(t *testing.T) {
+	e := newEnv(t, nil, nil)
+	e.nodes.errs["Cordon"] = errors.New("admission webhook denied the request")
+	e.imds.setEvents(scheduled("E1", imds.EventReboot, t0.Add(10*time.Minute), vmA))
+
+	if err := e.h.Tick(context.Background()); err == nil {
+		t.Fatal("Tick returned nil before the deadline, want the cordon error")
+	}
+	if got := e.imds.getApprovals(); len(got) != 0 {
+		t.Fatalf("approved before the deadline: %v", got)
+	}
+	if n := len(e.nodes.callsOf("Drain")); n != 0 {
+		t.Errorf("drain calls = %d, want 0 while cordon fails", n)
+	}
+
+	e.clock.Advance(10*time.Minute - 60*time.Second) // reach NotBefore - safety margin
+	err := e.h.Tick(context.Background())
+	if err == nil {
+		t.Error("Tick returned nil, want the cordon error after the approve attempt")
+	}
+	if got := e.imds.getApprovals(); !reflect.DeepEqual(got, []string{"E1"}) {
+		t.Errorf("approvals = %v, want [E1]", got)
+	}
+	if got := e.ann(nodeA, node.AnnApprovedEventID); got != "E1" {
+		t.Errorf("approved-event-id = %q, want E1", got)
+	}
+	if got := e.metric(t, "anth_errors_total", "op", "cordon"); got != 2 {
+		t.Errorf("errors_total{op=cordon} = %v, want 2", got)
+	}
+}
+
+func TestPeerNotDrainedApprovesAtDeadline(t *testing.T) {
+	e := newEnv(t, []*corev1.Node{testNode(nodeB, vmB)}, nil)
+	e.imds.setEvents(scheduled("E1", imds.EventReboot, t0.Add(10*time.Minute), vmA, vmB))
+
+	e.tick(t)
+	if got := e.imds.getApprovals(); len(got) != 0 {
+		t.Fatalf("approved while peer not drained: %v", got)
+	}
+
+	e.clock.Advance(10*time.Minute - 60*time.Second)
+	e.tick(t)
+
+	if got := e.imds.getApprovals(); !reflect.DeepEqual(got, []string{"E1"}) {
+		t.Errorf("approvals = %v, want [E1]", got)
+	}
+}
+
+func TestDisabledEventNotAnnotated(t *testing.T) {
+	e := newEnv(t, nil, func(o *Options) {
+		o.Decision.Enabled = map[imds.EventType]bool{imds.EventReboot: true}
+	})
+	e.imds.setEvents(scheduled("E1", imds.EventRedeploy, t0.Add(10*time.Minute), vmA))
+
+	e.tick(t)
+
+	for _, op := range []string{"SetAnnotations", "RemoveAnnotations", "Cordon", "Drain"} {
+		if n := len(e.nodes.callsOf(op)); n != 0 {
+			t.Errorf("%s calls = %d, want 0", op, n)
+		}
+	}
+	if got := e.notifier.stages(); len(got) != 0 {
+		t.Errorf("notifications = %v, want none", got)
+	}
+}
+
+func TestPreemptTakesOverCurrentEvent(t *testing.T) {
+	e := newEnv(t, []*corev1.Node{testNode(nodeB, vmB)}, nil)
+	redeploy := scheduled("E1", imds.EventRedeploy, t0.Add(7*24*time.Hour), vmA, vmB)
+	e.imds.setEvents(redeploy)
+
+	e.tick(t)
+	if got := e.ann(nodeA, node.AnnEventID); got != "E1" {
+		t.Fatalf("event-id = %q, want E1", got)
+	}
+	if got := e.ann(nodeA, node.AnnDrainedEventID); got != "E1" {
+		t.Fatalf("drained-event-id = %q, want E1", got)
+	}
+	if got := e.imds.getApprovals(); len(got) != 0 {
+		t.Fatalf("approved while waiting for peers: %v", got)
+	}
+
+	e.clock.Advance(time.Minute)
+	nb := e.clock.Now().Add(30 * time.Second)
+	e.imds.setEvents(redeploy, scheduled("P1", imds.EventPreempt, nb, vmA))
+	e.tick(t)
+
+	for k, want := range map[string]string{
+		node.AnnEventID:         "P1",
+		node.AnnEventType:       "Preempt",
+		node.AnnFirstSeen:       unix(e.clock.Now()),
+		node.AnnDrainedEventID:  "P1",
+		node.AnnApprovedEventID: "P1",
+	} {
+		if got := e.ann(nodeA, k); got != want {
+			t.Errorf("%s = %q, want %q", k, got, want)
+		}
+	}
+	drains := e.nodes.callsOf("Drain")
+	if len(drains) != 2 {
+		t.Fatalf("drain calls = %d, want 2", len(drains))
+	}
+	if d := drains[1].Drain; d.PodGracePeriodSeconds != 20 || !d.Deadline.Equal(nb.Add(-5*time.Second)) {
+		t.Errorf("preempt drain opts = %+v, want grace 20 and deadline %v", d, nb.Add(-5*time.Second))
+	}
+	if got := e.imds.getApprovals(); !reflect.DeepEqual(got, []string{"P1"}) {
+		t.Errorf("approvals = %v, want [P1]", got)
+	}
+}
+
+func TestSweepApprovesOverdueSecondaryEvent(t *testing.T) {
+	e := newEnv(t, []*corev1.Node{testNode(nodeB, vmB)}, nil)
+	e1 := scheduled("E1", imds.EventReboot, t0.Add(30*time.Minute), vmA, vmB)
+	e.imds.setEvents(e1)
+	e.tick(t) // E1 becomes current and waits for node-b
+
+	nb2 := t0.Add(5 * time.Minute)
+	e.imds.setEvents(e1, scheduled("E2", imds.EventReboot, nb2, vmA))
+	e.tick(t)
+	if got := e.ann(nodeA, node.AnnEventID); got != "E1" {
+		t.Fatalf("event-id = %q, want E1 to stay current", got)
+	}
+	if got := e.imds.getApprovals(); len(got) != 0 {
+		t.Fatalf("approvals = %v, want none before E2's deadline", got)
+	}
+
+	e.clock.Advance(4 * time.Minute) // NotBefore - 60s
+	e.tick(t)
+	e.clock.Advance(5 * time.Second)
+	e.tick(t)
+	e.tick(t)
+
+	if got := e.imds.getApprovals(); !reflect.DeepEqual(got, []string{"E2"}) {
+		t.Errorf("approvals = %v, want exactly [E2]", got)
+	}
+	if got := e.ann(nodeA, node.AnnEventID); got != "E1" {
+		t.Errorf("event-id = %q, want E1", got)
+	}
+	if got := e.ann(nodeA, node.AnnAction); got != node.ActionUncordonAfterReboot {
+		t.Errorf("action = %q", got)
+	}
+}
+
+func TestResourcesMatchCaseInsensitive(t *testing.T) {
+	e := newEnv(t, nil, nil)
+	e.imds.setEvents(scheduled("E1", imds.EventReboot, t0.Add(10*time.Minute), "VM-A"))
+
+	e.tick(t)
+
+	if got := e.imds.getApprovals(); !reflect.DeepEqual(got, []string{"E1"}) {
+		t.Errorf("approvals = %v, want [E1]", got)
+	}
+	if n := len(e.nodes.callsOf("ListNodes")); n != 0 {
+		t.Errorf("ListNodes calls = %d, want 0 (own VM is not a peer)", n)
 	}
 }
