@@ -1,0 +1,6 @@
+apiVersion: v2
+name: azure-node-termination-handler
+description: Drains Kubernetes nodes ahead of Azure Scheduled Events
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

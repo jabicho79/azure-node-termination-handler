@@ -1,0 +1,51 @@
+image:
+  repository: ghcr.io/jabicho79/azure-node-termination-handler
+  tag: "" # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+hostNetwork: false
+priorityClassName: system-node-critical
+nodeSelector:
+  kubernetes.io/os: linux
+tolerations:
+  - operator: Exists
+resources: {}
+podAnnotations: {}
+
+# Agent configuration (one key per config.go field except NodeName).
+vmName: ""
+imdsEndpoint: http://169.254.169.254
+pollInterval: 5s
+enableReboot: true
+enableRedeploy: true
+enablePreempt: true
+enableTerminate: true
+autoApprove: true
+drainSafetyMargin: 60s
+maxDrainTime: 60m
+preemptSafetyMargin: 5s
+podGracePeriod: -1
+preemptPodGracePeriod: 20
+deleteEmptyDirData: true
+ignoreDaemonSets: true
+eventGoneGrace: 5m
+webhookURL: ""
+webhookTemplate: ""
+metricsPort: 9092
+probesPort: 8080
+uptimeFile: /proc/uptime
+dryRun: false
+logLevel: info
+
+# Rendered verbatim into the container env (supports valueFrom).
+extraEnv: []
+extraVolumes: []
+extraVolumeMounts: []

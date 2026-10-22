@@ -1,0 +1,143 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "anth.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "anth.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "anth.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "anth.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "anth.serviceAccountName" . }}
+      hostNetwork: {{ .Values.hostNetwork }}
+      {{- if .Values.hostNetwork }}
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: azure-node-termination-handler
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            {{- if .Values.vmName }}
+            - name: VM_NAME
+              value: {{ .Values.vmName | quote }}
+            {{- end }}
+            - name: IMDS_ENDPOINT
+              value: {{ .Values.imdsEndpoint | quote }}
+            - name: POLL_INTERVAL
+              value: {{ .Values.pollInterval | quote }}
+            - name: ENABLE_REBOOT
+              value: {{ .Values.enableReboot | quote }}
+            - name: ENABLE_REDEPLOY
+              value: {{ .Values.enableRedeploy | quote }}
+            - name: ENABLE_PREEMPT
+              value: {{ .Values.enablePreempt | quote }}
+            - name: ENABLE_TERMINATE
+              value: {{ .Values.enableTerminate | quote }}
+            - name: AUTO_APPROVE
+              value: {{ .Values.autoApprove | quote }}
+            - name: DRAIN_SAFETY_MARGIN
+              value: {{ .Values.drainSafetyMargin | quote }}
+            - name: MAX_DRAIN_TIME
+              value: {{ .Values.maxDrainTime | quote }}
+            - name: PREEMPT_SAFETY_MARGIN
+              value: {{ .Values.preemptSafetyMargin | quote }}
+            - name: POD_GRACE_PERIOD
+              value: {{ .Values.podGracePeriod | quote }}
+            - name: PREEMPT_POD_GRACE_PERIOD
+              value: {{ .Values.preemptPodGracePeriod | quote }}
+            - name: DELETE_EMPTYDIR_DATA
+              value: {{ .Values.deleteEmptyDirData | quote }}
+            - name: IGNORE_DAEMONSETS
+              value: {{ .Values.ignoreDaemonSets | quote }}
+            - name: EVENT_GONE_GRACE
+              value: {{ .Values.eventGoneGrace | quote }}
+            {{- if .Values.webhookURL }}
+            - name: WEBHOOK_URL
+              value: {{ .Values.webhookURL | quote }}
+            {{- end }}
+            {{- if .Values.webhookTemplate }}
+            - name: WEBHOOK_TEMPLATE
+              value: {{ .Values.webhookTemplate | quote }}
+            {{- end }}
+            - name: METRICS_PORT
+              value: {{ .Values.metricsPort | quote }}
+            - name: PROBES_PORT
+              value: {{ .Values.probesPort | quote }}
+            - name: UPTIME_FILE
+              value: {{ .Values.uptimeFile | quote }}
+            - name: DRY_RUN
+              value: {{ .Values.dryRun | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.metricsPort }}
+              protocol: TCP
+            - name: probes
+              containerPort: {{ .Values.probesPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.probesPort }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.probesPort }}
+            periodSeconds: 5
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.extraVolumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.extraVolumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

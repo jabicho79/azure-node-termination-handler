@@ -9,6 +9,6 @@ IMAGE ?= azure-node-termination-handler:dev
 docker-build:
 	docker build -t $(IMAGE) .
 helm-lint:
-	@echo TODO
+	helm lint charts/azure-node-termination-handler
 e2e:
 	@echo TODO
