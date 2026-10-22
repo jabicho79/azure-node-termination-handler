@@ -5,8 +5,9 @@ test:
 	go test ./...
 vet:
 	go vet ./...
+IMAGE ?= azure-node-termination-handler:dev
 docker-build:
-	@echo TODO
+	docker build -t $(IMAGE) .
 helm-lint:
 	@echo TODO
 e2e:
