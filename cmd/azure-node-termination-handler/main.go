@@ -91,8 +91,9 @@ func run(cfg config.Config) error {
 	metrics := observability.NewMetrics(reg)
 
 	notifiers := observability.Multi{observability.NewEventRecorder(clientset, cfg.NodeName)}
+	var wh *webhook.Webhook
 	if cfg.WebhookURL != "" {
-		wh, err := webhook.New(cfg.WebhookURL, cfg.WebhookTemplate, nil)
+		wh, err = webhook.New(cfg.WebhookURL, cfg.WebhookTemplate, nil, metrics)
 		if err != nil {
 			return err
 		}
@@ -137,6 +138,11 @@ func run(cfg config.Config) error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	if wh != nil {
+		if werr := wh.Close(shutdownCtx); werr != nil {
+			log.Warn().Err(werr).Msg("Webhook notifications not delivered before shutdown")
+		}
+	}
 	for _, s := range servers {
 		if serr := s.Shutdown(shutdownCtx); serr != nil {
 			log.Warn().Err(serr).Str("addr", s.Addr).Msg("HTTP server shutdown")
