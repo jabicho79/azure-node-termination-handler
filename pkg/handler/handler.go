@@ -83,8 +83,12 @@ type Handler struct {
 	ready atomic.Bool
 }
 
-// New returns a Handler.
+// New returns a Handler. With o.DryRun, writes to the node are kept in an
+// in-memory overlay (see dryRunNodes) and approvals are only logged.
 func New(d Deps, o Options) *Handler {
+	if o.DryRun {
+		d.Nodes = newDryRunNodes(d.Nodes, o.NodeName)
+	}
 	return &Handler{d: d, o: o, freezeSeen: map[string]bool{}, approvedBySweep: map[string]bool{}}
 }
 
@@ -288,7 +292,7 @@ func (h *Handler) process(ctx context.Context, n *corev1.Node, e imds.Event) err
 		}
 	}
 
-	if plan.Approve && !h.o.DryRun && n.Annotations[node.AnnApprovedEventID] != e.EventID && !h.approvedBySweep[e.EventID] {
+	if plan.Approve && n.Annotations[node.AnnApprovedEventID] != e.EventID && !h.approvedBySweep[e.EventID] {
 		deferred = append(deferred, h.maybeApprove(ctx, n, e, plan, check))
 	}
 	return errors.Join(deferred...)
@@ -411,6 +415,12 @@ func (h *Handler) maybeApprove(ctx context.Context, n *corev1.Node, e imds.Event
 		})); err != nil {
 			return err
 		}
+	}
+	if h.o.DryRun {
+		// Recorded in the dry-run overlay so it is logged once per event.
+		h.d.Metrics.Approval("dry_run")
+		log.Info().Str("event", e.EventID).Msgf("Would have approved event %s, but dry-run was set", e.EventID)
+		return h.annotate(ctx, n, map[string]string{node.AnnApprovedEventID: e.EventID})
 	}
 	if err := h.d.IMDS.Approve(ctx, e.EventID); err != nil {
 		h.d.Metrics.Approval("error")

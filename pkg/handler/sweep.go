@@ -53,7 +53,8 @@ func (h *Handler) sweep(ctx context.Context, n *corev1.Node, events []imds.Event
 		}
 		if h.o.DryRun {
 			h.approvedBySweep[e.EventID] = true
-			logger.Info().Msg("Would have approved event, but dry-run was set")
+			h.d.Metrics.Approval("dry_run")
+			logger.Info().Msgf("Would have approved event %s, but dry-run was set", e.EventID)
 			continue
 		}
 		if err := h.d.IMDS.Approve(ctx, e.EventID); err != nil {
