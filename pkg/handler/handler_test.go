@@ -184,6 +184,7 @@ func TestRedeployCordonDrainApprove(t *testing.T) {
 		node.AnnCordoned:        "true",
 		node.AnnDrainedEventID:  "E1",
 		node.AnnApprovedEventID: "E1",
+		node.AnnActionEventID:   "E1",
 	} {
 		if got := e.ann(nodeA, k); got != want {
 			t.Errorf("%s = %q, want %q", k, got, want)

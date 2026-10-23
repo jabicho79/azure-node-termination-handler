@@ -380,3 +380,50 @@ func TestRunRetriesStartupThenTicks(t *testing.T) {
 		t.Fatal("Run did not return after cancel")
 	}
 }
+
+// A reboot for an event approved by the sweep completes that event, not the
+// current one: the current event is released and processed again from
+// scratch after the reboot.
+func TestSweepRebootDoesNotCompleteCurrentEvent(t *testing.T) {
+	e := newEnv(t, []*corev1.Node{testNode(nodeB, vmB)}, nil)
+	e1 := scheduled("E1", imds.EventReboot, t0.Add(30*time.Minute), vmA, vmB)
+	e2 := scheduled("E2", imds.EventReboot, t0.Add(5*time.Minute), vmA)
+	e.imds.setEvents(e1)
+	e.tick(t) // E1 becomes current and waits for node-b
+	e.imds.setEvents(e1, e2)
+	e.clock.Advance(4 * time.Minute) // E2's NotBefore - 60s
+	e.tick(t)
+	if got := e.imds.getApprovals(); !reflect.DeepEqual(got, []string{"E2"}) {
+		t.Fatalf("approvals = %v, want [E2]", got)
+	}
+	if got := e.ann(nodeA, node.AnnActionEventID); got != "E2" {
+		t.Fatalf("action-event-id = %q, want E2", got)
+	}
+
+	// The VM reboots for E2; the agent restarts.
+	e.clock.Advance(2 * time.Minute)
+	e.setUptime(time.Minute)
+	e.startup(t)
+
+	n := e.nodes.node(nodeA)
+	if got := n.Annotations[node.AnnCompletedEventID]; got != "E2" {
+		t.Errorf("completed-event-id = %q, want E2", got)
+	}
+	assertNoWorkingAnnotations(t, n)
+	if n.Spec.Unschedulable {
+		t.Error("node should be uncordoned after the reboot")
+	}
+
+	// E1 is still pending and is processed again; the Started E2 is not.
+	started := e2
+	started.EventStatus = imds.StatusStarted
+	started.NotBefore = ""
+	e.imds.setEvents(e1, started)
+	e.tick(t)
+	if got := e.ann(nodeA, node.AnnEventID); got != "E1" {
+		t.Errorf("event-id = %q, want E1", got)
+	}
+	if !e.nodes.node(nodeA).Spec.Unschedulable {
+		t.Error("node should be cordoned again for E1")
+	}
+}

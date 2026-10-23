@@ -44,8 +44,9 @@ func (h *Handler) sweep(ctx context.Context, n *corev1.Node, events []imds.Event
 		}
 		if plan.MarkUncordonAfterReboot {
 			if err := h.annotate(ctx, n, map[string]string{
-				node.AnnAction:     node.ActionUncordonAfterReboot,
-				node.AnnActionTime: unixString(now),
+				node.AnnAction:        node.ActionUncordonAfterReboot,
+				node.AnnActionTime:    unixString(now),
+				node.AnnActionEventID: e.EventID,
 			}); err != nil {
 				logger.Error().Err(err).Msg("Setting the uncordon marker failed; approving anyway")
 			}

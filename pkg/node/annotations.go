@@ -12,6 +12,7 @@ const (
 	AnnCordoned         = Prefix + "cordoned" // "true" only if we cordoned it
 	AnnAction           = Prefix + "action"
 	AnnActionTime       = Prefix + "action-time"        // unix seconds
+	AnnActionEventID    = Prefix + "action-event-id"    // event the action belongs to
 	AnnEventGoneSince   = Prefix + "event-gone-since"   // unix seconds
 	AnnCompletedEventID = Prefix + "completed-event-id" // survives release
 
@@ -29,5 +30,6 @@ var WorkingAnnotations = []string{
 	AnnCordoned,
 	AnnAction,
 	AnnActionTime,
+	AnnActionEventID,
 	AnnEventGoneSince,
 }

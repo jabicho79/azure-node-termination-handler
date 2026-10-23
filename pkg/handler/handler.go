@@ -380,8 +380,9 @@ func (h *Handler) maybeApprove(ctx context.Context, n *corev1.Node, e imds.Event
 
 	if plan.MarkUncordonAfterReboot {
 		if err := check(h.annotate(ctx, n, map[string]string{
-			node.AnnAction:     node.ActionUncordonAfterReboot,
-			node.AnnActionTime: unixString(now),
+			node.AnnAction:        node.ActionUncordonAfterReboot,
+			node.AnnActionTime:    unixString(now),
+			node.AnnActionEventID: e.EventID,
 		})); err != nil {
 			return err
 		}
@@ -474,8 +475,17 @@ func (h *Handler) rebooted(n *corev1.Node) (bool, error) {
 
 // release ends the node's current event. It uncordons the node if the agent
 // cordoned it, unless its Cluster API Machine is being deleted, and removes
-// every working annotation. If completed, the event ID is recorded so a
-// Started event still listed after the reboot is not handled again.
+// every working annotation. If completed (the VM rebooted after an approval
+// that set the uncordon marker), the ID of the event the marker belongs to
+// (action-event-id) is recorded so a Started event still listed after the
+// reboot is not handled again.
+//
+// The marker may belong to a secondary event approved by the sweep rather
+// than to the current event. Then only that event is recorded as completed;
+// the current event's working annotations are removed like the rest, so the
+// current event, which may still be pending, is processed again from scratch
+// (detect, cordon, drain, approve) after the reboot. Keeping its annotations
+// instead would leave drained-event-id set on a node whose pods came back.
 //
 // If the Machine check fails the node is left untouched and the error is
 // returned, so the release is retried.
@@ -507,9 +517,15 @@ func (h *Handler) release(ctx context.Context, n *corev1.Node, completed bool) e
 
 	// Record completion before removing the working annotations: if the
 	// removal fails, the retry still knows the event is done.
-	if completed && e.EventID != "" {
-		if err := h.annotate(ctx, n, map[string]string{node.AnnCompletedEventID: e.EventID}); err != nil {
-			return err
+	if completed {
+		id := n.Annotations[node.AnnActionEventID]
+		if id == "" {
+			id = e.EventID
+		}
+		if id != "" {
+			if err := h.annotate(ctx, n, map[string]string{node.AnnCompletedEventID: id}); err != nil {
+				return err
+			}
 		}
 	}
 	var present []string
