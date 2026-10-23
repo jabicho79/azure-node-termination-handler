@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -62,6 +63,45 @@ func run(cfg config.Config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// The metrics and probes servers start first, so the liveness probe
+	// answers while the VM name is being resolved. Readiness follows the
+	// handler, which is created later.
+	reg := prometheus.NewRegistry()
+	metrics := observability.NewMetrics(reg)
+	var handlerPtr atomic.Pointer[handler.Handler]
+	ready := func() bool {
+		h := handlerPtr.Load()
+		return h != nil && h.Ready()
+	}
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+	servers := []*http.Server{
+		{Addr: fmt.Sprintf(":%d", cfg.MetricsPort), Handler: metricsMux, ReadHeaderTimeout: 5 * time.Second},
+		{Addr: fmt.Sprintf(":%d", cfg.ProbesPort), Handler: newProbesMux(ready), ReadHeaderTimeout: 5 * time.Second},
+	}
+	for _, s := range servers {
+		go func() {
+			if err := s.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Error().Err(err).Str("addr", s.Addr).Msg("HTTP server failed")
+			}
+		}()
+	}
+	var wh *webhook.Webhook
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if wh != nil {
+			if err := wh.Close(shutdownCtx); err != nil {
+				log.Warn().Err(err).Msg("Webhook notifications not delivered before shutdown")
+			}
+		}
+		for _, s := range servers {
+			if err := s.Shutdown(shutdownCtx); err != nil {
+				log.Warn().Err(err).Str("addr", s.Addr).Msg("HTTP server shutdown")
+			}
+		}
+	}()
+
 	restCfg, err := rest.InClusterConfig()
 	if err != nil {
 		return fmt.Errorf("building in-cluster config: %w", err)
@@ -89,11 +129,7 @@ func run(cfg config.Config) error {
 	}
 	log.Info().Str("node", cfg.NodeName).Str("vm", vmName).Msg("Starting azure-node-termination-handler")
 
-	reg := prometheus.NewRegistry()
-	metrics := observability.NewMetrics(reg)
-
 	notifiers := observability.Multi{observability.NewEventRecorder(clientset, cfg.NodeName)}
-	var wh *webhook.Webhook
 	if cfg.WebhookURL != "" {
 		wh, err = webhook.New(cfg.WebhookURL, cfg.WebhookTemplate, nil, metrics)
 		if err != nil {
@@ -119,38 +155,19 @@ func run(cfg config.Config) error {
 		DryRun:             cfg.DryRun,
 		EventGoneGrace:     cfg.EventGoneGrace,
 	})
+	handlerPtr.Store(h)
 
-	metricsMux := http.NewServeMux()
-	metricsMux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
-	probesMux := http.NewServeMux()
-	probesMux.HandleFunc("/healthz", healthz(h.Ready))
-	servers := []*http.Server{
-		{Addr: fmt.Sprintf(":%d", cfg.MetricsPort), Handler: metricsMux, ReadHeaderTimeout: 5 * time.Second},
-		{Addr: fmt.Sprintf(":%d", cfg.ProbesPort), Handler: probesMux, ReadHeaderTimeout: 5 * time.Second},
-	}
-	for _, s := range servers {
-		go func() {
-			if err := s.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Error().Err(err).Str("addr", s.Addr).Msg("HTTP server failed")
-			}
-		}()
-	}
+	return h.Run(ctx, cfg.PollInterval)
+}
 
-	err = h.Run(ctx, cfg.PollInterval)
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if wh != nil {
-		if werr := wh.Close(shutdownCtx); werr != nil {
-			log.Warn().Err(werr).Msg("Webhook notifications not delivered before shutdown")
-		}
-	}
-	for _, s := range servers {
-		if serr := s.Shutdown(shutdownCtx); serr != nil {
-			log.Warn().Err(serr).Str("addr", s.Addr).Msg("HTTP server shutdown")
-		}
-	}
-	return err
+// newProbesMux serves /livez, which always returns 200 while the process
+// serves HTTP, and /healthz, the readiness check, which returns 200 when
+// ready() is true and 503 otherwise.
+func newProbesMux(ready func() bool) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	mux.HandleFunc("/healthz", healthz(ready))
+	return mux
 }
 
 // resolveVMName returns cfg.VMName, or the IMDS compute name, retried every

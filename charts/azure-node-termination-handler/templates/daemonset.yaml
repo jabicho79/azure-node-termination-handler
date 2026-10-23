@@ -116,7 +116,7 @@ spec:
               protocol: TCP
           livenessProbe:
             httpGet:
-              path: /healthz
+              path: /livez
               port: {{ .Values.probesPort }}
             initialDelaySeconds: 5
             periodSeconds: 10
