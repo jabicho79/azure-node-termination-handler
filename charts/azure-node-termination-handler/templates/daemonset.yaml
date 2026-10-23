@@ -100,6 +100,10 @@ spec:
               value: {{ .Values.dryRun | quote }}
             - name: LOG_LEVEL
               value: {{ .Values.logLevel | quote }}
+            - name: KUBE_API_QPS
+              value: {{ .Values.kubeApiQps | quote }}
+            - name: KUBE_API_BURST
+              value: {{ .Values.kubeApiBurst | quote }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

@@ -45,6 +45,8 @@ func TestParseDefaults(t *testing.T) {
 		{"VMName", c.VMName, ""},
 		{"WebhookURL", c.WebhookURL, ""},
 		{"WebhookTemplate", c.WebhookTemplate, ""},
+		{"KubeAPIQPS", c.KubeAPIQPS, float32(50)},
+		{"KubeAPIBurst", c.KubeAPIBurst, 100},
 	}
 	for _, ch := range checks {
 		if ch.got != ch.want {
@@ -105,6 +107,21 @@ func TestParseInvalidEnvNamesVariable(t *testing.T) {
 		_, err := Parse(nil, env(map[string]string{"NODE_NAME": "n1", kv[0]: kv[1]}))
 		if err == nil || !strings.Contains(err.Error(), kv[0]) {
 			t.Errorf("%s: err=%v", kv[0], err)
+		}
+	}
+}
+
+func TestParseKubeAPIRateLimits(t *testing.T) {
+	c, err := Parse([]string{"--kube-api-burst=40"}, env(map[string]string{"NODE_NAME": "n1", "KUBE_API_QPS": "20.5", "KUBE_API_BURST": "30"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.KubeAPIQPS != 20.5 || c.KubeAPIBurst != 40 {
+		t.Errorf("KubeAPIQPS=%v KubeAPIBurst=%v, want 20.5 and 40", c.KubeAPIQPS, c.KubeAPIBurst)
+	}
+	for _, kv := range [][2]string{{"KUBE_API_QPS", "fast"}, {"KUBE_API_QPS", "0"}, {"KUBE_API_BURST", "0"}} {
+		if _, err := Parse(nil, env(map[string]string{"NODE_NAME": "n1", kv[0]: kv[1]})); err == nil {
+			t.Errorf("%s=%s: expected error", kv[0], kv[1])
 		}
 	}
 }

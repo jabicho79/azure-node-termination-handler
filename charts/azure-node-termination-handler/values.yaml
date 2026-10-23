@@ -44,6 +44,9 @@ probesPort: 8080
 uptimeFile: /proc/uptime
 dryRun: false
 logLevel: info
+# client-go rate limits for Kubernetes API calls (drain evictions included).
+kubeApiQps: 50
+kubeApiBurst: 100
 
 # Rendered verbatim into the container env (supports valueFrom).
 extraEnv: []

@@ -38,6 +38,8 @@ type Config struct {
 	UptimeFile            string
 	DryRun                bool
 	LogLevel              string
+	KubeAPIQPS            float32 // client-go rate limit, requests per second
+	KubeAPIBurst          int
 }
 
 // flagToEnv maps a flag name to its env var: uppercase, '-' to '_'.
@@ -86,6 +88,17 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 		}
 		fs.IntVar(p, name, def, "")
 	}
+	float := func(p *float64, name string, def float64) {
+		if ev, v, ok := lookup(name); ok {
+			f, err := strconv.ParseFloat(v, 64)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("invalid %s=%q: %w", ev, v, err))
+			} else {
+				def = f
+			}
+		}
+		fs.Float64Var(p, name, def, "")
+	}
 	duration := func(p *time.Duration, name string, def time.Duration) {
 		if ev, v, ok := lookup(name); ok {
 			d, err := time.ParseDuration(v)
@@ -122,12 +135,19 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 	str(&c.UptimeFile, "uptime-file", "/proc/uptime")
 	boolean(&c.DryRun, "dry-run", false)
 	str(&c.LogLevel, "log-level", "info")
+	var qps float64
+	float(&qps, "kube-api-qps", 50)
+	integer(&c.KubeAPIBurst, "kube-api-burst", 100)
 
 	if len(errs) > 0 {
 		return Config{}, errors.Join(errs...)
 	}
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
+	}
+	c.KubeAPIQPS = float32(qps)
+	if c.KubeAPIQPS <= 0 || c.KubeAPIBurst <= 0 {
+		return Config{}, fmt.Errorf("kube-api-qps and kube-api-burst must be positive, got %v and %d", c.KubeAPIQPS, c.KubeAPIBurst)
 	}
 	if c.NodeName == "" {
 		return Config{}, errors.New("node-name is required (--node-name or NODE_NAME)")

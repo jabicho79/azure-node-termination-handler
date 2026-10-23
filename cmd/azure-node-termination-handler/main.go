@@ -66,6 +66,8 @@ func run(cfg config.Config) error {
 	if err != nil {
 		return fmt.Errorf("building in-cluster config: %w", err)
 	}
+	restCfg.QPS = cfg.KubeAPIQPS
+	restCfg.Burst = cfg.KubeAPIBurst
 	clientset, err := kubernetes.NewForConfig(restCfg)
 	if err != nil {
 		return fmt.Errorf("building clientset: %w", err)
