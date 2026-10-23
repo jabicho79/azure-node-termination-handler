@@ -43,11 +43,13 @@ type fakeIMDS struct {
 	err        error
 	approveErr error
 	approvals  []string
+	polls      int
 }
 
 func (f *fakeIMDS) ScheduledEvents(context.Context) (imds.Document, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.polls++
 	if f.err != nil {
 		return imds.Document{}, f.err
 	}
@@ -76,6 +78,12 @@ func (f *fakeIMDS) setEvents(events ...imds.Event) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.docs = []imds.Document{{DocumentIncarnation: 1, Events: events}}
+}
+
+func (f *fakeIMDS) getPolls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.polls
 }
 
 func (f *fakeIMDS) getApprovals() []string {

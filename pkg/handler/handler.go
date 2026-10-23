@@ -74,6 +74,11 @@ type Handler struct {
 	approvedBySweep map[string]bool
 	lastIncarnation int
 	seenDocument    bool
+	// idle is true when the node fetched by the last Tick had no working
+	// annotations; lastCompleted is its completed-event-id. While idle and
+	// no relevant event is listed, Tick skips fetching the node.
+	idle          bool
+	lastCompleted string
 	// ready is set once Startup has succeeded; read by the health check.
 	ready atomic.Bool
 }
@@ -97,6 +102,10 @@ func (h *Handler) Tick(ctx context.Context) error {
 		h.lastIncarnation = doc.DocumentIncarnation
 	}
 
+	if h.idle && len(h.relevantEvents(ctx, doc.Events, h.lastCompleted)) == 0 {
+		return nil
+	}
+
 	n, err := h.d.Nodes.Get(ctx, h.o.NodeName)
 	if err != nil {
 		h.d.Metrics.Error("get_node")
@@ -105,6 +114,9 @@ func (h *Handler) Tick(ctx context.Context) error {
 	if n.Annotations == nil {
 		n.Annotations = map[string]string{}
 	}
+	// n mirrors every successful write, so this records the node as the tick
+	// leaves it.
+	defer h.recordIdle(n)
 
 	events := h.relevantEvents(ctx, doc.Events, n.Annotations[node.AnnCompletedEventID])
 
@@ -132,6 +144,19 @@ func (h *Handler) Tick(ctx context.Context) error {
 		return errors.Join(errs...)
 	}
 	return errors.Join(append(errs, h.sweep(ctx, n, events, e.EventID))...)
+}
+
+// recordIdle remembers whether n has no working annotations, and its
+// completed-event-id.
+func (h *Handler) recordIdle(n *corev1.Node) {
+	h.idle = true
+	for _, k := range node.WorkingAnnotations {
+		if _, ok := n.Annotations[k]; ok {
+			h.idle = false
+			break
+		}
+	}
+	h.lastCompleted = n.Annotations[node.AnnCompletedEventID]
 }
 
 // relevantEvents keeps the events that affect this VM, notifies Freeze events

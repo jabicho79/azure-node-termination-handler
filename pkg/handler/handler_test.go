@@ -756,3 +756,44 @@ func TestRescheduledEventTakesOverWithoutUncordon(t *testing.T) {
 		t.Errorf("approvals = %v, want [A B]", got)
 	}
 }
+
+func TestIdleTicksSkipNodeGet(t *testing.T) {
+	e := newEnv(t, nil, nil)
+	e.imds.setEvents() // empty document
+
+	for range 4 {
+		e.tick(t)
+	}
+	if n := len(e.nodes.callsOf("Get")); n != 1 {
+		t.Errorf("Get calls = %d, want 1 (only the first tick)", n)
+	}
+
+	// Events for other VMs do not need the node either.
+	e.imds.setEvents(scheduled("X", imds.EventReboot, t0.Add(10*time.Minute), vmB))
+	e.tick(t)
+	if n := len(e.nodes.callsOf("Get")); n != 1 {
+		t.Errorf("Get calls = %d, want 1", n)
+	}
+
+	// An event for this VM makes the next tick fetch the node again.
+	e.imds.setEvents(scheduled("E1", imds.EventReboot, t0.Add(10*time.Minute), vmA))
+	e.tick(t)
+	if n := len(e.nodes.callsOf("Get")); n != 2 {
+		t.Errorf("Get calls = %d, want 2", n)
+	}
+	if got := e.imds.getApprovals(); !reflect.DeepEqual(got, []string{"E1"}) {
+		t.Errorf("approvals = %v, want [E1]", got)
+	}
+}
+
+func TestNodeGetContinuesWhileWorkingAnnotationsRemain(t *testing.T) {
+	e := newEnv(t, nil, nil)
+	approveThenWithdraw(t, e) // leaves E1's annotations; the document is empty
+
+	e.tick(t)
+	e.tick(t)
+
+	if n := len(e.nodes.callsOf("Get")); n != 3 {
+		t.Errorf("Get calls = %d, want 3", n)
+	}
+}

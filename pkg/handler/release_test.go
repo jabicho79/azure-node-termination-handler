@@ -352,9 +352,10 @@ func TestRunRetriesStartupThenTicks(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- e.h.Run(ctx, time.Millisecond) }()
 
-	// Startup fails once (Get), succeeds (Get), then Ticks call Get.
+	// Startup fails once (Get), succeeds (Get), then Ticks poll IMDS; only
+	// the first tick fetches the idle node.
 	waitUntil := time.Now().Add(5 * time.Second)
-	for len(e.nodes.callsOf("Get")) < 4 {
+	for len(e.nodes.callsOf("Get")) < 3 || e.imds.getPolls() < 3 {
 		if time.Now().After(waitUntil) {
 			t.Fatal("timed out waiting for ticks")
 		}
