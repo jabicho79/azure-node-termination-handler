@@ -712,3 +712,46 @@ func TestDisabledCurrentEventDoesNotHideActionableEvent(t *testing.T) {
 		t.Errorf("approvals = %v, want [E2]", got)
 	}
 }
+
+func TestRescheduledEventTakesOverWithoutUncordon(t *testing.T) {
+	e := newEnv(t, nil, nil)
+	e.imds.setEvents(scheduled("A", imds.EventRedeploy, t0.Add(7*24*time.Hour), vmA))
+	e.tick(t)
+	if got := e.imds.getApprovals(); !reflect.DeepEqual(got, []string{"A"}) {
+		t.Fatalf("approvals = %v, want [A]", got)
+	}
+
+	// Azure reschedules: A is replaced by B.
+	e.clock.Advance(time.Minute)
+	e.imds.setEvents(scheduled("B", imds.EventRedeploy, t0.Add(8*24*time.Hour), vmA))
+	e.tick(t)
+
+	if n := len(e.nodes.callsOf("Uncordon")); n != 0 {
+		t.Errorf("Uncordon calls = %d, want 0", n)
+	}
+	if n := len(e.nodes.callsOf("Cordon")); n != 1 {
+		t.Errorf("Cordon calls = %d, want 1", n)
+	}
+	if n := len(e.nodes.callsOf("Drain")); n != 2 {
+		t.Errorf("Drain calls = %d, want 2 (B is drained)", n)
+	}
+	n := e.nodes.node(nodeA)
+	if !n.Spec.Unschedulable {
+		t.Error("node should stay cordoned")
+	}
+	for k, want := range map[string]string{
+		node.AnnEventID:        "B",
+		node.AnnCordoned:       "true",
+		node.AnnDrainedEventID: "B",
+	} {
+		if got := n.Annotations[k]; got != want {
+			t.Errorf("%s = %q, want %q", k, got, want)
+		}
+	}
+	if got, ok := n.Annotations[node.AnnEventGoneSince]; ok {
+		t.Errorf("event-gone-since = %q, want absent", got)
+	}
+	if got := e.imds.getApprovals(); !reflect.DeepEqual(got, []string{"A", "B"}) {
+		t.Errorf("approvals = %v, want [A B]", got)
+	}
+}

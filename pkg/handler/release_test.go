@@ -301,7 +301,9 @@ func TestEventReappearsClearsGoneSince(t *testing.T) {
 	}
 }
 
-func TestSweepRunsWhileCurrentEventGone(t *testing.T) {
+// An overdue event listed while the current one is gone takes over and is
+// approved at once (it used to be left to the sweep while the gone grace ran).
+func TestOverdueEventTakesOverWhileCurrentEventGone(t *testing.T) {
 	e := newEnv(t, []*corev1.Node{testNode(nodeB, vmB)}, nil)
 	e.imds.setEvents(scheduled("E1", imds.EventReboot, t0.Add(30*time.Minute), vmA, vmB))
 	e.tick(t) // E1 becomes current and waits for node-b
@@ -311,11 +313,17 @@ func TestSweepRunsWhileCurrentEventGone(t *testing.T) {
 	e.clock.Advance(4 * time.Minute) // E2's NotBefore - 60s
 	e.tick(t)
 
-	if got := e.ann(nodeA, node.AnnEventGoneSince); got != unix(e.clock.Now()) {
-		t.Errorf("event-gone-since = %q, want %q", got, unix(e.clock.Now()))
+	if got, ok := e.nodes.node(nodeA).Annotations[node.AnnEventGoneSince]; ok {
+		t.Errorf("event-gone-since = %q, want absent", got)
+	}
+	if got := e.ann(nodeA, node.AnnEventID); got != "E2" {
+		t.Errorf("event-id = %q, want E2", got)
 	}
 	if got := e.imds.getApprovals(); !reflect.DeepEqual(got, []string{"E2"}) {
 		t.Errorf("approvals = %v, want [E2]", got)
+	}
+	if n := len(e.nodes.callsOf("Uncordon")); n != 0 {
+		t.Errorf("Uncordon calls = %d, want 0", n)
 	}
 }
 

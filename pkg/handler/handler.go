@@ -110,13 +110,13 @@ func (h *Handler) Tick(ctx context.Context) error {
 
 	current := n.Annotations[node.AnnEventID]
 	e, ok := h.pickEvent(events, current)
-	takeover := ok && e.EventType == imds.EventPreempt
-	if current != "" && !containsEvent(events, current) && !takeover {
-		err := h.handleGone(ctx, n)
-		if ctx.Err() != nil {
-			return err
-		}
-		return errors.Join(err, h.sweep(ctx, n, events, current))
+	// When the current event is gone but another actionable event is listed
+	// (Azure rescheduled it), the new event takes over like a Preempt does:
+	// detect replaces the IDs, clears event-gone-since and keeps the node
+	// cordoned. The sweep is not needed here: any event it would approve is
+	// actionable and would have been picked.
+	if current != "" && !containsEvent(events, current) && !ok {
+		return h.handleGone(ctx, n)
 	}
 	var errs []error
 	if _, gone := n.Annotations[node.AnnEventGoneSince]; gone && current != "" && containsEvent(events, current) {
