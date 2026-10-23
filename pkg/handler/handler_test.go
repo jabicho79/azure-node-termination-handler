@@ -687,3 +687,28 @@ func TestResourcesMatchCaseInsensitive(t *testing.T) {
 		t.Errorf("ListNodes calls = %d, want 0 (own VM is not a peer)", n)
 	}
 }
+
+func TestDisabledCurrentEventDoesNotHideActionableEvent(t *testing.T) {
+	// E1 was current before a restart that disabled Redeploy events.
+	n := testNode(nodeA, vmA,
+		node.AnnEventID, "E1",
+		node.AnnEventType, "Redeploy",
+		node.AnnFirstSeen, unix(t0.Add(-time.Minute)),
+	)
+	e := newEnv(t, []*corev1.Node{n}, func(o *Options) {
+		o.Decision.Enabled = map[imds.EventType]bool{imds.EventReboot: true}
+	})
+	e.imds.setEvents(
+		scheduled("E1", imds.EventRedeploy, t0.Add(5*time.Minute), vmA),
+		scheduled("E2", imds.EventReboot, t0.Add(10*time.Minute), vmA),
+	)
+
+	e.tick(t)
+
+	if got := e.ann(nodeA, node.AnnEventID); got != "E2" {
+		t.Errorf("event-id = %q, want E2", got)
+	}
+	if got := e.imds.getApprovals(); !reflect.DeepEqual(got, []string{"E2"}) {
+		t.Errorf("approvals = %v, want [E2]", got)
+	}
+}

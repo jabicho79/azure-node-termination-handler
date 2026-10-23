@@ -169,7 +169,7 @@ func containsEvent(events []imds.Event, id string) bool {
 
 // pickEvent returns the current event. Events whose Plan is zero (disabled or
 // unknown types) are never picked. A Preempt always wins; otherwise the event
-// with ID current is kept if listed, else the one with the earliest NotBefore
+// with ID current is kept if it is listed and actionable, else the one with the earliest NotBefore
 // is picked (events without a valid NotBefore come first).
 func (h *Handler) pickEvent(events []imds.Event, current string) (imds.Event, bool) {
 	now := h.d.Now()
@@ -195,7 +195,9 @@ func (h *Handler) pickEvent(events []imds.Event, current string) (imds.Event, bo
 			return e, true
 		}
 	}
-	for _, e := range events {
+	// Only an actionable current event is kept: one whose type has since been
+	// disabled must not hide another actionable event.
+	for _, e := range actionable {
 		if e.EventID == current {
 			return e, true
 		}
