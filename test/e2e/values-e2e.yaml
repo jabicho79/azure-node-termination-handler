@@ -1,0 +1,30 @@
+# Helm values for the kind e2e suite.
+image:
+  repository: azure-node-termination-handler
+  tag: dev
+  pullPolicy: IfNotPresent
+
+imdsEndpoint: http://fake-imds.anth-e2e:8080
+maxDrainTime: 20s
+eventGoneGrace: 10s
+pollInterval: 1s
+uptimeFile: /e2e/uptime
+logLevel: debug
+
+# The fake IMDS lists node names as the affected VMs.
+extraEnv:
+  - name: VM_NAME
+    valueFrom:
+      fieldRef:
+        fieldPath: spec.nodeName
+
+# scripts/e2e.sh and the tests write the fake uptime here on every node.
+extraVolumes:
+  - name: e2e
+    hostPath:
+      path: /var/lib/anth-e2e
+      type: Directory
+extraVolumeMounts:
+  - name: e2e
+    mountPath: /e2e
+    readOnly: true

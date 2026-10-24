@@ -1,0 +1,76 @@
+# Fake Azure IMDS for the e2e suite. The agents reach it in-cluster at
+# http://fake-imds.anth-e2e:8080; the tests reach it at localhost:30080.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-imds
+  namespace: anth-e2e
+  labels:
+    app: fake-imds
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fake-imds
+  template:
+    metadata:
+      labels:
+        app: fake-imds
+    spec:
+      # Keep the fake off the workers so draining them never moves it.
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+      containers:
+        - name: fake-imds
+          image: azure-node-termination-handler:dev
+          imagePullPolicy: IfNotPresent
+          command: ["/fake-imds"]
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            periodSeconds: 2
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fake-imds
+  namespace: anth-e2e
+spec:
+  type: ClusterIP
+  selector:
+    app: fake-imds
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fake-imds-nodeport
+  namespace: anth-e2e
+spec:
+  type: NodePort
+  selector:
+    app: fake-imds
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      nodePort: 30080
